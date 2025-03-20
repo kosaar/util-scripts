@@ -5,26 +5,24 @@ usage() {
     echo "Docker File Transfer Automation Script"
     echo "-------------------------------------"
     echo "This script automates file transfer between local machine and Docker containers"
-    echo "running on remote hosts using Docker Compose."
+    echo "using Docker Compose in feature-specific directories."
     echo
-    echo "Usage: $0 <feature_number> -r <host> [options]"
+    echo "Usage: $0 <feature_number> [options]"
     echo
     echo "Parameters:"
     echo "  <feature_number>     Feature number to target /opt/data/feature<feature_number>"
     echo "                       Must be a positive integer"
     echo
-    echo "Required options:"
-    echo "  -r, --remote HOST    Connect to remote host"
-    echo
-    echo "Other options:"
+    echo "Options:"
     echo "  -h, --help           Display this help message"
+    echo "  -r, --remote HOST    Connect to remote host (required)"
     echo "  -u, --user USER      Remote username (will prompt if not provided)"
     echo "  -k, --key KEY_PATH   Use SSH private key for authentication"
     echo "  -n, --netrc          Use .netrc file for credentials"
     echo
     echo "Examples:"
-    echo "  $0 42 -r server.com -u admin"
-    echo "  $0 42 -r server.com -k ~/.ssh/id_rsa"
+    echo "  $0 42 -r server.com  Connect to remote server, feature 42"
+    echo "  $0 42 -r server.com -u admin -k ~/.ssh/id_rsa"
     echo
     exit 1
 }
@@ -51,9 +49,6 @@ parse_arguments() {
     FEATURE_NUMBER=$1
     shift
 
-    # Check if -r/--remote is provided
-    FOUND_REMOTE=false
-
     while [ $# -gt 0 ]; do
         case "$1" in
             -h|--help)
@@ -61,7 +56,6 @@ parse_arguments() {
                 ;;
             -r|--remote)
                 REMOTE_HOST="$2"
-                FOUND_REMOTE=true
                 shift 2
                 ;;
             -u|--user)
@@ -83,9 +77,9 @@ parse_arguments() {
         esac
     done
 
-    # Ensure remote host is specified
-    if ! $FOUND_REMOTE; then
-        echo "Error: Remote host (-r, --remote) is required"
+    # Ensure remote host is provided
+    if [ -z "$REMOTE_HOST" ]; then
+        echo "Error: Remote host is required"
         usage
     fi
 }
@@ -95,12 +89,14 @@ setup_ssh_connection() {
     if $USE_NETRC; then
         if [ ! -f "$HOME/.netrc" ]; then
             echo "Error: .netrc file not found!"
+            read -p "Press Enter to continue..."
             exit 1
         fi
 
         NETRC_DATA=$(grep -A2 "machine $REMOTE_HOST" "$HOME/.netrc")
         if [ -z "$NETRC_DATA" ]; then
             echo "Error: Host $REMOTE_HOST not found in .netrc!"
+            read -p "Press Enter to continue..."
             exit 1
         fi
 
@@ -178,6 +174,7 @@ run_docker_compose() {
     # Check if docker-compose file exists
     if ! remote_exec "[ -f $DOCKER_COMPOSE_FILE ]"; then
         echo "Error: Docker Compose file not found at $DOCKER_COMPOSE_FILE"
+        read -p "Press Enter to continue..."
         return 1
     fi
 
@@ -193,6 +190,7 @@ get_container_name() {
 
     if [ -z "$SERVICES" ]; then
         echo "Error: No services found in docker-compose.yml or services not running"
+        read -p "Press Enter to continue..."
         return 1
     fi
 
@@ -204,10 +202,28 @@ get_container_name() {
 
     if [ -z "$CONTAINER_NAME" ]; then
         echo "Error: Container not running for service $SERVICE_NAME"
+        read -p "Press Enter to continue..."
         return 1
     fi
 
     echo "$CONTAINER_NAME"
+}
+
+# Function to map container path to host path
+map_container_path() {
+    local container_path=$1
+    local host_mounted_path=""
+
+    # Check if the path is under /opt/data
+    if [[ $container_path == /opt/data/* ]]; then
+        # Since /opt/data is mounted from host, we need to map it
+        host_mounted_path="/opt/data"
+    else
+        # Path is inside container
+        host_mounted_path=""
+    fi
+
+    echo "$host_mounted_path"
 }
 
 # Function to show menu
@@ -215,18 +231,19 @@ show_menu() {
     clear
     echo "Docker File Transfer - Feature $FEATURE_NUMBER"
     echo "=========================================="
-    echo "Target path: $CONTAINER_PATH"
+    echo "Current path: $CURRENT_PATH"
     echo "Container: $CONTAINER_NAME"
     echo "Remote host: $REMOTE_USER@$REMOTE_HOST"
     echo
     echo "1) Copy file from local to container"
     echo "2) Copy file from container to local"
-    echo "3) List files in container directory"
-    echo "4) Change container/service"
-    echo "5) Docker Compose status"
-    echo "6) Docker Compose up"
-    echo "7) Docker Compose down"
-    echo "8) Docker Compose logs"
+    echo "3) Explore container filesystem"
+    echo "4) Execute command in container"
+    echo "5) Change container/service"
+    echo "6) Docker Compose status"
+    echo "7) Docker Compose up"
+    echo "8) Docker Compose down"
+    echo "9) Docker Compose logs"
     echo "0) Exit"
     echo
     echo -n "Choose an option: "
@@ -244,7 +261,7 @@ copy_to_container() {
     fi
 
     # Create directory in container if it doesn't exist
-    remote_exec "docker exec $CONTAINER_NAME mkdir -p $CONTAINER_PATH"
+    remote_exec "docker exec $CONTAINER_NAME mkdir -p $CURRENT_PATH"
 
     # Get filename
     FILENAME=$(basename "$LOCAL_FILE")
@@ -255,11 +272,11 @@ copy_to_container() {
     remote_copy_to "$LOCAL_FILE" "$TEMP_PATH"
 
     echo "Copying from remote host to container..."
-    remote_exec "docker cp $TEMP_PATH $CONTAINER_NAME:$CONTAINER_PATH/$FILENAME"
+    remote_exec "docker cp $TEMP_PATH $CONTAINER_NAME:$CURRENT_PATH/$FILENAME"
     remote_exec "rm $TEMP_PATH"
 
     if [ $? -eq 0 ]; then
-        echo "File copied successfully."
+        echo "File copied successfully to $CURRENT_PATH/$FILENAME"
     else
         echo "Error copying file!"
     fi
@@ -269,9 +286,9 @@ copy_to_container() {
 
 # Function to copy file from container
 copy_from_container() {
-    # List files in container directory
-    echo "Files in $CONTAINER_PATH:"
-    remote_exec "docker exec $CONTAINER_NAME ls -la $CONTAINER_PATH"
+    # List files in container path
+    echo "Files in $CURRENT_PATH:"
+    remote_exec "docker exec $CONTAINER_NAME ls -la $CURRENT_PATH"
 
     echo "Enter file name to copy from container:"
     read CONTAINER_FILE
@@ -284,7 +301,7 @@ copy_from_container() {
 
     TEMP_PATH="/tmp/$CONTAINER_FILE"
     echo "Copying from container to remote host..."
-    remote_exec "docker cp $CONTAINER_NAME:$CONTAINER_PATH/$CONTAINER_FILE $TEMP_PATH"
+    remote_exec "docker cp $CONTAINER_NAME:$CURRENT_PATH/$CONTAINER_FILE $TEMP_PATH"
 
     echo "Copying from remote host to local machine..."
     remote_copy_from "$TEMP_PATH" "$LOCAL_DIR/"
@@ -299,10 +316,101 @@ copy_from_container() {
     read -p "Press Enter to continue..."
 }
 
-# Function to list files in container
-list_container_files() {
-    echo "Files in $CONTAINER_PATH:"
-    remote_exec "docker exec $CONTAINER_NAME ls -la $CONTAINER_PATH 2>/dev/null || echo \"Directory doesn't exist or is empty.\""
+# Enhanced function to explore container filesystem
+explore_container_filesystem() {
+    while true; do
+        clear
+        echo "File Explorer - Container: $CONTAINER_NAME"
+        echo "Path: $CURRENT_PATH"
+        echo "----------------------------------------"
+
+        # Get current working directory in container
+        CONTAINER_PWD=$(remote_exec "docker exec $CONTAINER_NAME pwd")
+        echo "Container PWD: $CONTAINER_PWD"
+        echo
+
+        # List files in current directory
+        echo "Directory contents:"
+        remote_exec "docker exec $CONTAINER_NAME ls -la $CURRENT_PATH"
+        echo
+
+        # Check if we're in a mounted directory
+        MOUNTED_PATH=$(map_container_path "$CURRENT_PATH")
+        if [ -n "$MOUNTED_PATH" ]; then
+            echo "Note: This directory is mounted from host at $MOUNTED_PATH"
+            echo
+        fi
+
+        echo "Options:"
+        echo "1) Navigate to subdirectory"
+        echo "2) Go up one directory"
+        echo "3) Change to specific path"
+        echo "4) Show file content"
+        echo "5) Return to main menu"
+        echo
+        echo -n "Choose an option: "
+        read EXPLORE_OPTION
+
+        case $EXPLORE_OPTION in
+            1)
+                echo "Enter subdirectory name:"
+                read SUBDIR
+                NEW_PATH="$CURRENT_PATH/$SUBDIR"
+                # Check if directory exists
+                if remote_exec "docker exec $CONTAINER_NAME [ -d $NEW_PATH ]"; then
+                    CURRENT_PATH="$NEW_PATH"
+                else
+                    echo "Directory not found or not accessible."
+                    read -p "Press Enter to continue..."
+                fi
+                ;;
+            2)
+                # Go up one directory
+                CURRENT_PATH=$(dirname "$CURRENT_PATH")
+                ;;
+            3)
+                echo "Enter absolute path:"
+                read NEW_PATH
+                # Check if directory exists
+                if remote_exec "docker exec $CONTAINER_NAME [ -d $NEW_PATH ]"; then
+                    CURRENT_PATH="$NEW_PATH"
+                else
+                    echo "Directory not found or not accessible."
+                    read -p "Press Enter to continue..."
+                fi
+                ;;
+            4)
+                echo "Enter filename to view:"
+                read FILENAME
+                echo "----------------------------------------"
+                echo "Content of $CURRENT_PATH/$FILENAME:"
+                echo "----------------------------------------"
+                remote_exec "docker exec $CONTAINER_NAME cat $CURRENT_PATH/$FILENAME"
+                echo "----------------------------------------"
+                read -p "Press Enter to continue..."
+                ;;
+            5)
+                return
+                ;;
+            *)
+                echo "Invalid option!"
+                read -p "Press Enter to continue..."
+                ;;
+        esac
+    done
+}
+
+# Function to execute command in container
+execute_container_command() {
+    echo "Enter command to execute in container:"
+    read COMMAND
+
+    echo "----------------------------------------"
+    echo "Executing: $COMMAND"
+    echo "----------------------------------------"
+    remote_exec "docker exec $CONTAINER_NAME sh -c \"cd $CURRENT_PATH && $COMMAND\""
+    echo "----------------------------------------"
+
     read -p "Press Enter to continue..."
 }
 
@@ -356,11 +464,11 @@ docker_compose_logs() {
 # Main script
 parse_arguments "$@"
 
-# Configure paths
-CONTAINER_PATH="/opt/data/feature${FEATURE_NUMBER}"
-
 # Setup SSH connection
 setup_ssh_connection
+
+# Configure paths
+CURRENT_PATH="/"
 
 # Get container name
 CONTAINER_NAME=$(get_container_name)
@@ -382,12 +490,13 @@ while true; do
     case $OPTION in
         1) copy_to_container ;;
         2) copy_from_container ;;
-        3) list_container_files ;;
-        4) change_container ;;
-        5) docker_compose_status ;;
-        6) docker_compose_up ;;
-        7) docker_compose_down ;;
-        8) docker_compose_logs ;;
+        3) explore_container_filesystem ;;
+        4) execute_container_command ;;
+        5) change_container ;;
+        6) docker_compose_status ;;
+        7) docker_compose_up ;;
+        8) docker_compose_down ;;
+        9) docker_compose_logs ;;
         0) echo "Exiting..."; exit 0 ;;
         *) echo "Invalid option!"; read -p "Press Enter to continue..." ;;
     esac
