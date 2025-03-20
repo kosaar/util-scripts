@@ -5,24 +5,26 @@ usage() {
     echo "Docker File Transfer Automation Script"
     echo "-------------------------------------"
     echo "This script automates file transfer between local machine and Docker containers"
-    echo "using Docker Compose in feature-specific directories."
+    echo "running on remote hosts using Docker Compose."
     echo
-    echo "Usage: $0 <feature_number> [options]"
+    echo "Usage: $0 <feature_number> -r <host> [options]"
     echo
     echo "Parameters:"
     echo "  <feature_number>     Feature number to target /opt/data/feature<feature_number>"
+    echo "                       Must be a positive integer"
     echo
-    echo "Options:"
+    echo "Required options:"
+    echo "  -r, --remote HOST    Connect to remote host"
+    echo
+    echo "Other options:"
     echo "  -h, --help           Display this help message"
-    echo "  -r, --remote HOST    Connect to remote host instead of local Docker"
     echo "  -u, --user USER      Remote username (will prompt if not provided)"
     echo "  -k, --key KEY_PATH   Use SSH private key for authentication"
     echo "  -n, --netrc          Use .netrc file for credentials"
     echo
     echo "Examples:"
-    echo "  $0 42                Work with local Docker, feature 42"
-    echo "  $0 42 -r server.com  Connect to remote server, feature 42"
-    echo "  $0 42 -r server.com -u admin -k ~/.ssh/id_rsa"
+    echo "  $0 42 -r server.com -u admin"
+    echo "  $0 42 -r server.com -k ~/.ssh/id_rsa"
     echo
     exit 1
 }
@@ -40,8 +42,17 @@ parse_arguments() {
         usage
     fi
 
+    # Check if feature number is a positive integer
+    if ! [[ $1 =~ ^[0-9]+$ ]]; then
+        echo "Error: Feature number must be a positive integer"
+        usage
+    fi
+
     FEATURE_NUMBER=$1
     shift
+
+    # Check if -r/--remote is provided
+    FOUND_REMOTE=false
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -50,6 +61,7 @@ parse_arguments() {
                 ;;
             -r|--remote)
                 REMOTE_HOST="$2"
+                FOUND_REMOTE=true
                 shift 2
                 ;;
             -u|--user)
@@ -70,26 +82,25 @@ parse_arguments() {
                 ;;
         esac
     done
+
+    # Ensure remote host is specified
+    if ! $FOUND_REMOTE; then
+        echo "Error: Remote host (-r, --remote) is required"
+        usage
+    fi
 }
 
 # Function to setup SSH connection
 setup_ssh_connection() {
-    if [ -z "$REMOTE_HOST" ]; then
-        # Local mode - no SSH needed
-        return
-    fi
-
     if $USE_NETRC; then
         if [ ! -f "$HOME/.netrc" ]; then
             echo "Error: .netrc file not found!"
-            read -p "Press Enter to continue..."
             exit 1
         fi
 
         NETRC_DATA=$(grep -A2 "machine $REMOTE_HOST" "$HOME/.netrc")
         if [ -z "$NETRC_DATA" ]; then
             echo "Error: Host $REMOTE_HOST not found in .netrc!"
-            read -p "Press Enter to continue..."
             exit 1
         fi
 
@@ -128,16 +139,10 @@ setup_ssh_connection() {
 
 # Execute remote command
 remote_exec() {
-    if [ -z "$REMOTE_HOST" ]; then
-        # Local mode
-        eval "$@"
+    if [ -n "$SSH_KEY" ]; then
+        ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" "$@"
     else
-        # Remote mode
-        if [ -n "$SSH_KEY" ]; then
-            ssh -i "$SSH_KEY" "$REMOTE_USER@$REMOTE_HOST" "$@"
-        else
-            sshpass -p "$REMOTE_PASS" ssh "$REMOTE_USER@$REMOTE_HOST" "$@"
-        fi
+        sshpass -p "$REMOTE_PASS" ssh "$REMOTE_USER@$REMOTE_HOST" "$@"
     fi
 }
 
@@ -146,16 +151,10 @@ remote_copy_to() {
     local_path=$1
     remote_path=$2
 
-    if [ -z "$REMOTE_HOST" ]; then
-        # Local mode
-        cp -r "$local_path" "$remote_path"
+    if [ -n "$SSH_KEY" ]; then
+        scp -i "$SSH_KEY" -r "$local_path" "$REMOTE_USER@$REMOTE_HOST:$remote_path"
     else
-        # Remote mode
-        if [ -n "$SSH_KEY" ]; then
-            scp -i "$SSH_KEY" -r "$local_path" "$REMOTE_USER@$REMOTE_HOST:$remote_path"
-        else
-            sshpass -p "$REMOTE_PASS" scp -r "$local_path" "$REMOTE_USER@$REMOTE_HOST:$remote_path"
-        fi
+        sshpass -p "$REMOTE_PASS" scp -r "$local_path" "$REMOTE_USER@$REMOTE_HOST:$remote_path"
     fi
 }
 
@@ -164,16 +163,10 @@ remote_copy_from() {
     remote_path=$1
     local_path=$2
 
-    if [ -z "$REMOTE_HOST" ]; then
-        # Local mode
-        cp -r "$remote_path" "$local_path"
+    if [ -n "$SSH_KEY" ]; then
+        scp -i "$SSH_KEY" -r "$REMOTE_USER@$REMOTE_HOST:$remote_path" "$local_path"
     else
-        # Remote mode
-        if [ -n "$SSH_KEY" ]; then
-            scp -i "$SSH_KEY" -r "$REMOTE_USER@$REMOTE_HOST:$remote_path" "$local_path"
-        else
-            sshpass -p "$REMOTE_PASS" scp -r "$REMOTE_USER@$REMOTE_HOST:$remote_path" "$local_path"
-        fi
+        sshpass -p "$REMOTE_PASS" scp -r "$REMOTE_USER@$REMOTE_HOST:$remote_path" "$local_path"
     fi
 }
 
@@ -185,7 +178,6 @@ run_docker_compose() {
     # Check if docker-compose file exists
     if ! remote_exec "[ -f $DOCKER_COMPOSE_FILE ]"; then
         echo "Error: Docker Compose file not found at $DOCKER_COMPOSE_FILE"
-        read -p "Press Enter to continue..."
         return 1
     fi
 
@@ -201,7 +193,6 @@ get_container_name() {
 
     if [ -z "$SERVICES" ]; then
         echo "Error: No services found in docker-compose.yml or services not running"
-        read -p "Press Enter to continue..."
         return 1
     fi
 
@@ -213,7 +204,6 @@ get_container_name() {
 
     if [ -z "$CONTAINER_NAME" ]; then
         echo "Error: Container not running for service $SERVICE_NAME"
-        read -p "Press Enter to continue..."
         return 1
     fi
 
@@ -227,9 +217,7 @@ show_menu() {
     echo "=========================================="
     echo "Target path: $CONTAINER_PATH"
     echo "Container: $CONTAINER_NAME"
-    if [ -n "$REMOTE_HOST" ]; then
-        echo "Remote host: $REMOTE_USER@$REMOTE_HOST"
-    fi
+    echo "Remote host: $REMOTE_USER@$REMOTE_HOST"
     echo
     echo "1) Copy file from local to container"
     echo "2) Copy file from container to local"
@@ -261,20 +249,14 @@ copy_to_container() {
     # Get filename
     FILENAME=$(basename "$LOCAL_FILE")
 
-    # Copy to temp location on remote host if needed
-    if [ -n "$REMOTE_HOST" ]; then
-        TEMP_PATH="/tmp/$FILENAME"
-        echo "Copying $LOCAL_FILE to remote host..."
-        remote_copy_to "$LOCAL_FILE" "$TEMP_PATH"
+    # Copy to temp location on remote host
+    TEMP_PATH="/tmp/$FILENAME"
+    echo "Copying $LOCAL_FILE to remote host..."
+    remote_copy_to "$LOCAL_FILE" "$TEMP_PATH"
 
-        echo "Copying from remote host to container..."
-        remote_exec "docker cp $TEMP_PATH $CONTAINER_NAME:$CONTAINER_PATH/$FILENAME"
-        remote_exec "rm $TEMP_PATH"
-    else
-        # Direct copy for local Docker
-        echo "Copying $LOCAL_FILE to $CONTAINER_PATH/$FILENAME..."
-        docker cp "$LOCAL_FILE" "$CONTAINER_NAME:$CONTAINER_PATH/$FILENAME"
-    fi
+    echo "Copying from remote host to container..."
+    remote_exec "docker cp $TEMP_PATH $CONTAINER_NAME:$CONTAINER_PATH/$FILENAME"
+    remote_exec "rm $TEMP_PATH"
 
     if [ $? -eq 0 ]; then
         echo "File copied successfully."
@@ -300,19 +282,13 @@ copy_from_container() {
     # Create local directory if it doesn't exist
     mkdir -p "$LOCAL_DIR"
 
-    if [ -n "$REMOTE_HOST" ]; then
-        TEMP_PATH="/tmp/$CONTAINER_FILE"
-        echo "Copying from container to remote host..."
-        remote_exec "docker cp $CONTAINER_NAME:$CONTAINER_PATH/$CONTAINER_FILE $TEMP_PATH"
+    TEMP_PATH="/tmp/$CONTAINER_FILE"
+    echo "Copying from container to remote host..."
+    remote_exec "docker cp $CONTAINER_NAME:$CONTAINER_PATH/$CONTAINER_FILE $TEMP_PATH"
 
-        echo "Copying from remote host to local machine..."
-        remote_copy_from "$TEMP_PATH" "$LOCAL_DIR/"
-        remote_exec "rm $TEMP_PATH"
-    else
-        # Direct copy for local Docker
-        echo "Copying $CONTAINER_PATH/$CONTAINER_FILE to $LOCAL_DIR..."
-        docker cp "$CONTAINER_NAME:$CONTAINER_PATH/$CONTAINER_FILE" "$LOCAL_DIR/"
-    fi
+    echo "Copying from remote host to local machine..."
+    remote_copy_from "$TEMP_PATH" "$LOCAL_DIR/"
+    remote_exec "rm $TEMP_PATH"
 
     if [ $? -eq 0 ]; then
         echo "File copied successfully to $LOCAL_DIR/$CONTAINER_FILE"
@@ -326,7 +302,7 @@ copy_from_container() {
 # Function to list files in container
 list_container_files() {
     echo "Files in $CONTAINER_PATH:"
-    remote_exec "docker exec $CONTAINER_NAME ls -la $CONTAINER_PATH 2>/dev/null || echo 'Directory doesn't exist or is empty.'"
+    remote_exec "docker exec $CONTAINER_NAME ls -la $CONTAINER_PATH 2>/dev/null || echo \"Directory doesn't exist or is empty.\""
     read -p "Press Enter to continue..."
 }
 
@@ -383,7 +359,7 @@ parse_arguments "$@"
 # Configure paths
 CONTAINER_PATH="/opt/data/feature${FEATURE_NUMBER}"
 
-# Setup SSH connection if needed
+# Setup SSH connection
 setup_ssh_connection
 
 # Get container name
