@@ -231,19 +231,15 @@ show_menu() {
     clear
     echo "Docker File Transfer - Feature $FEATURE_NUMBER"
     echo "=========================================="
-    echo "Current path: $CURRENT_PATH"
     echo "Container: $CONTAINER_NAME"
     echo "Remote host: $REMOTE_USER@$REMOTE_HOST"
     echo
-    echo "1) Copy file from local to container"
-    echo "2) Copy file from container to local"
-    echo "3) Explore container filesystem"
-    echo "4) Execute command in container"
-    echo "5) Change container/service"
-    echo "6) Docker Compose status"
-    echo "7) Docker Compose up"
-    echo "8) Docker Compose down"
-    echo "9) Docker Compose logs"
+    echo "1) Explore container filesystem"
+    echo "2) Change container/service"
+    echo "3) Docker Compose status"
+    echo "4) Docker Compose up"
+    echo "5) Docker Compose down"
+    echo "6) Docker Compose logs"
     echo "0) Exit"
     echo
     echo -n "Choose an option: "
@@ -316,7 +312,21 @@ copy_from_container() {
     read -p "Press Enter to continue..."
 }
 
-# Enhanced function to explore container filesystem
+# Function to execute command in container
+execute_container_command() {
+    echo "Enter command to execute in container:"
+    read COMMAND
+
+    echo "----------------------------------------"
+    echo "Executing: $COMMAND"
+    echo "----------------------------------------"
+    remote_exec "docker exec $CONTAINER_NAME sh -c \"cd $CURRENT_PATH && $COMMAND\""
+    echo "----------------------------------------"
+
+    read -p "Press Enter to continue..."
+}
+
+# Enhanced function to explore container filesystem with integrated file operations
 explore_container_filesystem() {
     while true; do
         clear
@@ -346,7 +356,10 @@ explore_container_filesystem() {
         echo "2) Go up one directory"
         echo "3) Change to specific path"
         echo "4) Show file content"
-        echo "5) Return to main menu"
+        echo "5) Copy file from local to container"
+        echo "6) Copy file from container to local"
+        echo "7) Execute command in container"
+        echo "8) Return to main menu"
         echo
         echo -n "Choose an option: "
         read EXPLORE_OPTION
@@ -390,6 +403,15 @@ explore_container_filesystem() {
                 read -p "Press Enter to continue..."
                 ;;
             5)
+                copy_to_container
+                ;;
+            6)
+                copy_from_container
+                ;;
+            7)
+                execute_container_command
+                ;;
+            8)
                 return
                 ;;
             *)
@@ -398,20 +420,6 @@ explore_container_filesystem() {
                 ;;
         esac
     done
-}
-
-# Function to execute command in container
-execute_container_command() {
-    echo "Enter command to execute in container:"
-    read COMMAND
-
-    echo "----------------------------------------"
-    echo "Executing: $COMMAND"
-    echo "----------------------------------------"
-    remote_exec "docker exec $CONTAINER_NAME sh -c \"cd $CURRENT_PATH && $COMMAND\""
-    echo "----------------------------------------"
-
-    read -p "Press Enter to continue..."
 }
 
 # Function to change container/service
@@ -488,15 +496,12 @@ while true; do
     read OPTION
 
     case $OPTION in
-        1) copy_to_container ;;
-        2) copy_from_container ;;
-        3) explore_container_filesystem ;;
-        4) execute_container_command ;;
-        5) change_container ;;
-        6) docker_compose_status ;;
-        7) docker_compose_up ;;
-        8) docker_compose_down ;;
-        9) docker_compose_logs ;;
+        1) explore_container_filesystem ;;
+        2) change_container ;;
+        3) docker_compose_status ;;
+        4) docker_compose_up ;;
+        5) docker_compose_down ;;
+        6) docker_compose_logs ;;
         0) echo "Exiting..."; exit 0 ;;
         *) echo "Invalid option!"; read -p "Press Enter to continue..." ;;
     esac
